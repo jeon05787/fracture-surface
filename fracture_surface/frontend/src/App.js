@@ -5,7 +5,16 @@ import {
   useMemo,
   useCallback,
 } from "react";
+
 import { addHistoryItem, fetchHistory, clearAllHistory } from "./firebase";
+
+import {
+  buildPhaseHistoryItem,
+  addPhaseHistoryItem,
+  fetchPhaseHistory,
+  renamePhaseHistoryItem,
+  clearAllPhaseHistory,
+} from "./firebasePhase";
 
 const CLASS_COLORS = {
   Cleavage: "#2563EB",
@@ -1158,6 +1167,9 @@ export default function App() {
   // Phase 분석 결과
   const [phaseResult, setPhaseResult] = useState(null);
 
+  // Phase 분석 기록
+  const [phaseHistory, setPhaseHistory] = useState([]);
+
   // Phase 분석 진행 상태
   const [phaseLoading, setPhaseLoading] = useState(false);
 
@@ -1274,20 +1286,49 @@ const handlePhaseFileChange = async (e) => {
       // 분석 결과 수신
       const data = await response.json();
 
-      // 모델 미연결 상태 처리
-      if (data.status === "model_not_ready") {
+if (data.status !== "success") {
+  setPhaseError(data.message || "Phase 분석에 실패했습니다.");
+  return;
+}
 
-        setPhaseError(
-          data.message ||
-          "Phase 모델이 아직 연결되지 않았습니다."
-        );
+setPhaseResult(data);
 
-        return;
-
-      }
+// 저장용 가벼운 기록 생성 후 Firestore 저장
+try {
+  const item = await buildPhaseHistoryItem({
+    title: `Phase 분석 ${phaseHistory.length + 1}`,
+    originalDataUrl: phasePreviewUrl,
+    data,
+  });
+  await addPhaseHistoryItem(item);
+  setPhaseHistory(await fetchPhaseHistory());
+} catch (err) {
+  console.error("Phase 기록 저장 실패:", err);
+  // 분석 결과는 이미 화면에 표시됐으므로 저장 실패만 알림
+  alert("분석은 완료됐지만 기록 저장에 실패했습니다.");
+}
 
       // 분석 결과 저장
       setPhaseResult(data);
+
+      // Phase 분석 기록 추가
+      const newPhaseHistory = {
+        id: Date.now(),
+
+        // 자동 제목
+        title: `Phase 분석 ${phaseHistory.length + 1}`,
+
+        time: new Date().toLocaleString("ko-KR"),
+
+        image: phasePreviewUrl,
+
+        result: data,
+      };
+
+      setPhaseHistory((prev) => [
+        newPhaseHistory,
+        ...prev,
+      ]);
 
       console.log(
         "Phase 분석 성공:",
@@ -1312,6 +1353,38 @@ const handlePhaseFileChange = async (e) => {
     }
 
   };
+ 
+  // ==========================================
+  // Phase 분석 기록 클릭
+  // ==========================================
+
+  const handlePhaseHistoryClick = (item) => {
+  if (!item) return;
+  setPhasePreviewUrl(item.image);   // 썸네일(저해상도)
+  setPhaseResult(item.result);
+  setPhaseFile(null);               // 이전 파일이 재분석되는 문제 방지
+  setPhaseError("");
+};
+
+  // ==========================================
+  // Phase 기록 제목 변경
+  // ==========================================
+const handlePhaseHistoryRename = async (id, currentTitle) => {
+  const newTitle = window.prompt("새로운 제목을 입력하세요.", currentTitle);
+  if (newTitle === null) return;
+  const trimmed = newTitle.trim();
+  if (!trimmed) return;
+
+  const target = phaseHistory.find((i) => i.id === id);
+  setPhaseHistory((prev) =>
+    prev.map((i) => (i.id === id ? { ...i, title: trimmed } : i))
+  );
+  try {
+    if (target?.docId) await renamePhaseHistoryItem(target.docId, trimmed);
+  } catch (err) {
+    console.error("제목 변경 실패:", err);
+  }
+};
 
   useEffect(() => {
   const loadHistory = async () => {
@@ -1323,6 +1396,17 @@ const handlePhaseFileChange = async (e) => {
     }
   };
   loadHistory();
+}, []);
+
+useEffect(() => {
+  const loadPhaseHistory = async () => {
+    try {
+      setPhaseHistory(await fetchPhaseHistory());
+    } catch (err) {
+      console.error("Phase 기록 불러오기 실패:", err);
+    }
+  };
+  loadPhaseHistory();
 }, []);
 
   const materialText =
@@ -1867,171 +1951,260 @@ const clearHistory = async () => {
               : "w-0 -translate-x-full p-0 border-none"
           }`}
         >
-          <div className="flex items-center justify-between mb-5">
-            <div>
-              <p className="text-[11px] tracking-[0.16em] uppercase text-slate-400 font-semibold">
-                Analysis History
-              </p>
+          {activeTab === "fracture" ? (
+            <>
+              {/* ==========================================
+                  파단면 분석 기록
+              ========================================== */}
 
-              <h2 className="text-lg font-bold mt-1 whitespace-nowrap">
-                분석 기록
-              </h2>
-            </div>
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <p className="text-[11px] tracking-[0.16em] uppercase text-slate-400 font-semibold">
+                    Fracture History
+                  </p>
 
-            {history.length >
-              0 && (
-              <button
-                onClick={
-                  clearHistory
-                }
-                className="text-xs text-slate-400 hover:text-red-500 whitespace-nowrap"
-              >
-                전체 삭제
-              </button>
-            )}
-          </div>
+                  <h2 className="text-lg font-bold mt-1 whitespace-nowrap">
+                    파단면 분석 기록
+                  </h2>
+                </div>
 
-          {history.length >
-            0 && (
-            <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-200">
-              <p className="text-xs text-slate-500 leading-5">
-                결과 2개를 선택하면
-                비교할 수 있습니다.
-              </p>
-
-              <button
-                onClick={
-                  openCompare
-                }
-                disabled={
-                  selectedCompareIds.length <
-                  2
-                }
-                className="mt-2 w-full rounded-lg bg-slate-900 text-white py-2 text-xs font-semibold disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 transition"
-              >
-                선택 결과 비교 (
-                {
-                  selectedCompareIds.length
-                }
-                /2)
-              </button>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            {history.length ===
-              0 && (
-              <div className="rounded-xl bg-slate-50 border border-dashed p-5 text-center">
-                <p className="text-sm text-slate-400">
-                  아직 분석 기록이
-                  없습니다.
-                </p>
-              </div>
-            )}
-
-            {history.map(
-              (item) => {
-                const itemResult =
-                  item.result;
-
-                const itemMaterial =
-                  MATERIAL_LABELS[
-                    itemResult
-                      .material
-                  ] ||
-                  itemResult
-                    .material ||
-                  "-";
-
-                const checked =
-                  selectedCompareIds.includes(
-                    item.id
-                  );
-
-                return (
-                  <div
-                    key={
-                      item.id
-                    }
-                    onClick={() =>
-                      handleHistoryClick(
-                        item
-                      )
-                    }
-                    className={`relative w-full text-left p-3 rounded-xl border transition cursor-pointer ${
-                      checked
-                        ? "bg-blue-50 border-blue-400"
-                        : "bg-white hover:border-slate-400 hover:bg-slate-50 border-slate-200"
-                    }`}
+                {history.length > 0 && (
+                  <button
+                    onClick={clearHistory}
+                    className="text-xs text-slate-400 hover:text-red-500 whitespace-nowrap"
                   >
-                    <input
-                      type="checkbox"
-                      checked={
+                    전체 삭제
+                  </button>
+                )}
+              </div>
+
+              {/* 비교 */}
+              {history.length > 0 && (
+                <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                  <p className="text-xs text-slate-500 leading-5">
+                    결과 2개를 선택하면 비교할 수 있습니다.
+                  </p>
+
+                  <button
+                    onClick={openCompare}
+                    disabled={selectedCompareIds.length < 2}
+                    className="mt-2 w-full rounded-lg bg-slate-900 text-white py-2 text-xs font-semibold disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 transition"
+                  >
+                    선택 결과 비교 ({selectedCompareIds.length}/2)
+                  </button>
+                </div>
+              )}
+
+              {/* 파단면 기록 목록 */}
+              <div className="space-y-2">
+                {history.length === 0 && (
+                  <div className="rounded-xl bg-slate-50 border border-dashed p-5 text-center">
+                    <p className="text-sm text-slate-400">
+                      아직 파단면 분석 기록이 없습니다.
+                    </p>
+                  </div>
+                )}
+
+                {history.map((item) => {
+                  const itemResult = item.result;
+
+                  const itemMaterial =
+                    MATERIAL_LABELS[itemResult.material] ||
+                    itemResult.material ||
+                    "-";
+
+                  const checked =
+                    selectedCompareIds.includes(item.id);
+
+                  return (
+                    <div
+                      key={item.id}
+                      onClick={() =>
+                        handleHistoryClick(item)
+                      }
+                      className={`relative w-full text-left p-3 rounded-xl border transition cursor-pointer ${
                         checked
-                      }
-                      onClick={(
-                        e
-                      ) =>
-                        e.stopPropagation()
-                      }
-                      onChange={() =>
-                        toggleCompareSelect(
-                          item.id
-                        )
-                      }
-                      className="absolute top-3 right-3 w-4 h-4 accent-slate-900 cursor-pointer"
-                    />
+                          ? "bg-blue-50 border-blue-400"
+                          : "bg-white hover:border-slate-400 hover:bg-slate-50 border-slate-200"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onClick={(e) =>
+                          e.stopPropagation()
+                        }
+                        onChange={() =>
+                          toggleCompareSelect(item.id)
+                        }
+                        className="absolute top-3 right-3 w-4 h-4 accent-slate-900 cursor-pointer"
+                      />
 
-                    <div className="flex gap-3 pr-6">
-                      <div className="w-14 h-14 rounded-lg bg-slate-200 overflow-hidden shrink-0">
-                        {item.image ? (
-                          <img
-                            src={
-                              item.image
-                            }
-                            alt="기록 이미지"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
-                            No Image
-                          </div>
-                        )}
-                      </div>
+                      <div className="flex gap-3 pr-6">
+                        <div className="w-14 h-14 rounded-lg bg-slate-200 overflow-hidden shrink-0">
+                          {item.image ? (
+                            <img
+                              src={item.image}
+                              alt="기록 이미지"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
+                              No Image
+                            </div>
+                          )}
+                        </div>
 
-                      <div className="min-w-0">
-                        <p className="font-bold text-sm">
-                          {itemResult
-                            .display_prediction ||
-                            itemResult
-                              .prediction}
-                        </p>
+                        <div className="min-w-0">
+                          <p className="font-bold text-sm">
+                            {itemResult.display_prediction ||
+                              itemResult.prediction}
+                          </p>
 
-                        <p className="text-sm text-blue-600 font-semibold">
-                          {
-                            itemResult
-                              .confidence
-                          }
-                        </p>
+                          <p className="text-sm text-blue-600 font-semibold">
+                            {itemResult.confidence}
+                          </p>
 
-                        <p className="text-xs text-slate-500 truncate">
-                          {
-                            itemMaterial
-                          }
-                        </p>
+                          <p className="text-xs text-slate-500 truncate">
+                            {itemMaterial}
+                          </p>
 
-                        <p className="text-[11px] text-slate-400 mt-1">
-                          {
-                            item.time
-                          }
-                        </p>
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {item.time}
+                          </p>
+                        </div>
                       </div>
                     </div>
+                  );
+                })}
+              </div>
+            </>
+          ) : (
+            <>
+
+              {/* ==========================================
+                  Phase 분석 기록
+              ========================================== */}
+
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <p className="text-[11px] tracking-[0.16em] uppercase text-emerald-600 font-semibold">
+                    Phase History
+                  </p>
+
+                  <h2 className="text-lg font-bold mt-1 whitespace-nowrap">
+                    Phase 분석 기록
+                  </h2>
+                </div>
+
+                {phaseHistory.length > 0 && (
+                  <button
+  onClick={async () => {
+    try { await clearAllPhaseHistory(); } catch (e) { console.error(e); }
+    setPhaseHistory([]);
+  }}
+  className="text-xs text-slate-400 hover:text-red-500 whitespace-nowrap"
+>
+  전체 삭제
+</button>
+                )}
+              </div>
+
+              <div className="space-y-2">
+
+                {/* 기록이 없을 때 */}
+                {phaseHistory.length === 0 && (
+                  <div className="rounded-xl bg-emerald-50/50 border border-dashed border-emerald-200 p-5 text-center">
+
+                    <div className="w-10 h-10 mx-auto mb-3 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold">
+                      P
+                    </div>
+
+                    <p className="text-sm font-semibold text-slate-600">
+                      아직 Phase 분석 기록이 없습니다.
+                    </p>
+
+                    <p className="text-xs text-slate-400 mt-2 leading-5">
+                      Phase 분석을 실행하면
+                      여기에 기록됩니다.
+                    </p>
+
                   </div>
-                );
-              }
-            )}
-          </div>
+                )}
+
+                {/* Phase 분석 기록 */}
+                {phaseHistory.map((item) => {
+
+                return (
+                    <div
+                      key={item.id}
+                      onClick={() =>
+                        handlePhaseHistoryClick(item)
+                      }
+                      className="w-full p-3 rounded-xl border border-slate-200 bg-white hover:border-emerald-400 hover:bg-emerald-50/30 transition cursor-pointer"
+                    >
+
+                      <div className="flex gap-3">
+
+                        {/* 원본 이미지 */}
+                        <div className="w-14 h-14 rounded-lg bg-slate-200 overflow-hidden shrink-0">
+
+                          {item.image ? (
+                            <img
+                              src={item.image}
+                              alt="Phase 기록 이미지"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-400">
+                              No Image
+                            </div>
+                          )}
+
+                        </div>
+
+                        {/* 분석 정보 */}
+                        <div className="min-w-0 flex-1">
+
+                          <div className="flex items-start justify-between gap-2">
+
+                            <p className="text-sm font-bold text-slate-700 truncate">
+                              {item.title || "Phase 분석"}
+                            </p>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+
+                                handlePhaseHistoryRename(
+                                  item.id,
+                                  item.title || "Phase 분석"
+                                );
+                              }}
+                              className="shrink-0 text-xs text-slate-400 hover:text-emerald-600 transition"
+                              title="제목 변경"
+                            >
+                              수정
+                            </button>
+
+                          </div>
+                          
+                          <p className="text-[11px] text-slate-400 mt-1">
+                            {item.time}
+                          </p>
+
+                        </div>
+
+                      </div>
+
+                    </div>
+                  );
+                })}
+
+              </div>
+            </>
+          )}
         </aside>
 
         {/* 메인 */}
@@ -2358,7 +2531,7 @@ const clearHistory = async () => {
                             </p>
 
                             <p className="text-[10px] text-slate-400">
-                              Softmax
+                              예측 확률
                             </p>
                           </div>
 
@@ -2366,11 +2539,11 @@ const clearHistory = async () => {
                             {Object.entries(
                               result.similarities
                             )
-                              .sort(
-                                (a, b) =>
-                                  parseFloat(b[1]) -
-                                  parseFloat(a[1])
-                              )
+                              .sort((a, b) => {
+  const va = parseFloat(a[1]);
+  const vb = parseFloat(b[1]);
+  return (isNaN(vb) ? -1 : vb) - (isNaN(va) ? -1 : va);
+})
                               .map(
                                 ([name, value]) => {
                                   const percent =
@@ -2402,6 +2575,8 @@ const clearHistory = async () => {
                                           className={`text-[11px] ${
                                             isPredicted
                                               ? "font-bold text-slate-900"
+                                              : value === "-"
+                                              ? "font-medium text-slate-300"
                                               : "font-medium text-slate-500"
                                           }`}
                                         >
@@ -2819,7 +2994,7 @@ const clearHistory = async () => {
                               },
                               {
                                 label: "Al",
-                                key: "Al Matrix",
+                                key: "Al",
                               },
                             ].map((phase) => {
 

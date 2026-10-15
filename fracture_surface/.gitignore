@@ -21,3 +21,12 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+*.pth
+
+__pycache__
+*.pyc
+node_modules/
+
+*/similar_db/*
+*/similar_cache.pt

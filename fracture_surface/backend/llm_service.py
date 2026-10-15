@@ -245,10 +245,10 @@ def get_confidence_level(
     confidence_percent: float
 ) -> str:
 
-    if confidence_percent < 50:
+    if confidence_percent < 60:
         return "low"
 
-    elif confidence_percent < 75:
+    elif confidence_percent < 80:
         return "medium"
 
     return "high"
@@ -1847,10 +1847,10 @@ def generate_compare_analysis(
         )
 
 
-    if conf1 < 50 or conf2 < 50:
+    if conf1 < 60 or conf2 < 60:
 
         confidence_text += (
-            " 50% 미만의 결과가 포함되어 있어 "
+            " 60% 미만의 결과가 포함되어 있어 "
             "해석 시 추가 검토가 필요할 수 있습니다."
         )
 

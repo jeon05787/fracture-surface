@@ -26,6 +26,15 @@ from torchvision import transforms
 # 유사 이미지 검색
 from similar_search import SimilarImageSearcher
 
+# Phase Segmentation
+from phase_model import (
+    load_phase_model,
+    predict_phase,
+    phase_mask_to_rgb,
+    calculate_phase_distribution,
+    create_phase_overlay,
+)
+
 # CNN 모델 로드
 from model import load_model
 
@@ -147,25 +156,6 @@ KO_LABELS = {
     "Intergranular": "입계 파괴",
 }
 
-
-# ═══════════════════════════════════════════════════════
-# 판정 규칙
-# ═══════════════════════════════════════════════════════
-
-DUCTILE_DOMINANT = 0.60
-GAP_THRESHOLD = 0.10
-
-
-PRIORITY_GROUPS = [
-    ("Fatigue",),
-    (
-        "Cleavage",
-        "Intergranular",
-    ),
-    ("Ductile",),
-]
-
-
 # ═══════════════════════════════════════════════════════
 # Grad-CAM 색상
 # BGR 기준
@@ -206,6 +196,21 @@ model = load_model(
     model_path=MODEL_PATH,
     device=DEVICE,
     num_classes=NUM_CLASSES,
+)
+
+# ═══════════════════════════════════════════════════════
+# Phase Segmentation 모델 로드
+# ═══════════════════════════════════════════════════════
+
+PHASE_MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "model",
+    "phase_best.pth",
+)
+
+phase_model = load_phase_model(
+    model_path=PHASE_MODEL_PATH,
+    device=DEVICE,
 )
 
 
@@ -798,215 +803,35 @@ async def analyze_fracture(
     ].item()
 
 
-    # ─────────────────────────────────────────────
-    # STEP 1
-    # 연성 파괴 60% 이상 → 연성 우선
-    # ─────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════
+    # 최종 파손 유형 결정
+    # Fatigue가 검출되고 확률 60% 이상이면 Fatigue 우선
+    # ═══════════════════════════════════════════════════
 
-    if (
-        ductile_prob
-        >= DUCTILE_DOMINANT
-    ):
+    FATIGUE_THRESHOLD = 0.60
 
-        final_en = "Ductile"
+    detected = [name for name in CNN_CLASSES if name in masks_dict]
 
+    fatigue_prob = probs_tensor[CNN_CLASSES.index("Fatigue")].item()
+
+    if "Fatigue" in detected and fatigue_prob >= FATIGUE_THRESHOLD:
+        final_en = "Fatigue"
         decision_path = (
-            "STEP 1 "
-            f"(Ductile {ductile_prob * 100:.1f}% "
-            f"≥ {DUCTILE_DOMINANT * 100:.0f}%)"
+            f"Fatigue 검출 및 확률 {fatigue_prob * 100:.1f}% "
+            f"(≥{FATIGUE_THRESHOLD * 100:.0f}%) → Fatigue 우선"
         )
 
+    elif detected:
+        final_en = max(
+            detected,
+            key=lambda n: probs_tensor[CNN_CLASSES.index(n)].item(),
+        )
+        decision_path = f"검출 클래스 중 최고 확률 ({final_en})"
 
     else:
-
-        # Grad-CAM 통과 클래스만 후보
-        candidates = [
-            (
-                name,
-                probs_tensor[
-                    CNN_CLASSES.index(
-                        name
-                    )
-                ].item(),
-            )
-
-            for name
-            in CNN_CLASSES
-
-            if name in masks_dict
-        ]
-
-
-        # ─────────────────────────────────────────────
-        # STEP 2
-        # Grad-CAM 후보 없음
-        # ─────────────────────────────────────────────
-
-        if not candidates:
-
-            final_en = CNN_CLASSES[
-                int(
-                    probs_tensor
-                    .argmax()
-                    .item()
-                )
-            ]
-
-            decision_path = (
-                "STEP 2 폴백 "
-                "(GradCAM 통과 클래스 없음 → argmax)"
-            )
-
-            print(
-                "[경고] GradCAM 통과 클래스 없음 "
-                "→ softmax argmax 폴백"
-            )
-
-
-        else:
-
-            candidates.sort(
-                key=lambda x: x[1],
-                reverse=True,
-            )
-
-            (
-                top1_name,
-                top1_prob,
-            ) = candidates[0]
-
-
-            # ─────────────────────────────────────────
-            # STEP 3-A
-            # 후보 하나
-            # ─────────────────────────────────────────
-
-            if len(
-                candidates
-            ) == 1:
-
-                final_en = (
-                    top1_name
-                )
-
-                decision_path = (
-                    f"STEP 3 단일 후보 "
-                    f"({top1_name})"
-                )
-
-
-            else:
-
-                top2_prob = (
-                    candidates[
-                        1
-                    ][1]
-                )
-
-                gap_top12 = (
-                    top1_prob
-                    - top2_prob
-                )
-
-
-                # ─────────────────────────────────────
-                # STEP 3-B
-                # 10%p 이상 차이
-                # ─────────────────────────────────────
-
-                if (
-                    gap_top12
-                    >= GAP_THRESHOLD
-                ):
-
-                    final_en = (
-                        top1_name
-                    )
-
-                    decision_path = (
-                        "STEP 3 압도 "
-                        f"(차이 {gap_top12 * 100:.1f}%p "
-                        f"≥ {GAP_THRESHOLD * 100:.0f}%p)"
-                    )
-
-
-                # ─────────────────────────────────────
-                # STEP 3-C
-                # 박빙 → 우선순위
-                # ─────────────────────────────────────
-
-                else:
-
-                    close_group = [
-                        (
-                            name,
-                            prob,
-                        )
-
-                        for (
-                            name,
-                            prob,
-                        )
-                        in candidates
-
-                        if (
-                            top1_prob
-                            - prob
-                        )
-                        < GAP_THRESHOLD
-                    ]
-
-
-                    final_en = None
-
-
-                    for group in PRIORITY_GROUPS:
-
-                        in_group = [
-                            (
-                                n,
-                                p,
-                            )
-
-                            for (
-                                n,
-                                p,
-                            )
-                            in close_group
-
-                            if n in group
-                        ]
-
-
-                        if in_group:
-
-                            in_group.sort(
-                                key=lambda x: x[1],
-                                reverse=True,
-                            )
-
-                            final_en = (
-                                in_group[
-                                    0
-                                ][0]
-                            )
-
-                            break
-
-
-                    if final_en is None:
-
-                        final_en = (
-                            top1_name
-                        )
-
-
-                    decision_path = (
-                        "STEP 3 박빙 우선순위 "
-                        f"(박빙 {len(close_group)}개, "
-                        f"선택: {final_en})"
-                    )
-
+        final_en = CNN_CLASSES[int(probs_tensor.argmax().item())]
+        decision_path = "폴백: 검출 클래스 없음 → argmax"
+        print("[경고] GradCAM 검출 클래스 없음 → softmax argmax 폴백")
 
     # ═══════════════════════════════════════════════════
     # 최종 분석 정보
@@ -1123,21 +948,15 @@ async def analyze_fracture(
     # 클래스별 확률
     # ═══════════════════════════════════════════════════
 
-    similarities = {
-        KO_LABELS[
-            CNN_CLASSES[i]
-        ]:
-        (
-            f"{probs_tensor[i].item() * 100:.1f}%"
-        )
+    # Grad-CAM 자체가 실패해 masks_dict가 비어 있으면 전부 표시
+    show_all = len(masks_dict) == 0
 
-        for i
-        in range(
-            len(
-                CNN_CLASSES
-            )
-        )
-    }
+    similarities = {}
+    for i, name in enumerate(CNN_CLASSES):
+        if show_all or name in masks_dict or name == final_en:
+            similarities[KO_LABELS[name]] = f"{probs_tensor[i].item() * 100:.1f}%"
+        else:
+            similarities[KO_LABELS[name]] = "-"
 
 
     # ═══════════════════════════════════════════════════
@@ -1460,6 +1279,199 @@ async def compare_analysis(
 
     return compare_result
 
+# ═══════════════════════════════════════════════════════
+# Phase Segmentation API
+# ═══════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════
+# Phase Segmentation API
+# ═══════════════════════════════════════════════════════
+
+@app.post("/analyze-phase")
+async def analyze_phase(
+    file: UploadFile = File(...)
+):
+
+    print(
+        f"Phase 분석 요청 수신: {file.filename}"
+    )
+
+    # ==========================================
+    # 1. 이미지 파일 읽기
+    # ==========================================
+
+    image_bytes = await file.read()
+
+    if not image_bytes:
+
+        return {
+            "status": "error",
+            "message": "이미지 파일이 비어 있습니다.",
+        }
+
+    # ==========================================
+    # 2. 이미지 형식 확인
+    # ==========================================
+
+    try:
+
+        image = Image.open(
+            io.BytesIO(image_bytes)
+        ).convert("RGB")
+
+    except Exception as e:
+
+        print(
+            f"Phase 이미지 로드 오류: {e}"
+        )
+
+        return {
+            "status": "error",
+            "message": "이미지를 읽을 수 없습니다.",
+        }
+
+    # PIL -> NumPy RGB
+    image_rgb = np.array(image)
+
+    height, width = image_rgb.shape[:2]
+
+    print(
+        f"Phase 이미지 크기: {width} x {height}"
+    )
+
+    # ==========================================
+    # 3. Phase Segmentation 추론
+    # ==========================================
+
+    try:
+
+        phase_model.eval()
+
+        mask = predict_phase(
+            model=phase_model,
+            image_rgb=image_rgb,
+            device=DEVICE,
+        )
+
+        print(
+            f"Phase 추론 완료 - mask shape: {mask.shape}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Phase 모델 추론 오류: {e}"
+        )
+
+        return {
+            "status": "error",
+            "message": (
+                "Phase Segmentation 모델 추론 중 "
+                "오류가 발생했습니다."
+            ),
+        }
+
+    # ==========================================
+    # 4. Phase 면적 비율 계산
+    # ==========================================
+
+    try:
+
+        phase_distribution = (
+            calculate_phase_distribution(
+                mask
+            )
+        )
+
+        print(
+            f"Phase 분포: {phase_distribution}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"Phase 분포 계산 오류: {e}"
+        )
+
+        return {
+            "status": "error",
+            "message": (
+                "Phase 분포 계산 중 "
+                "오류가 발생했습니다."
+            ),
+        }
+
+    # ==========================================
+    # 5. 컬러 Mask 생성
+    # ==========================================
+
+    color_mask = phase_mask_to_rgb(
+        mask
+    )
+
+    # ==========================================
+    # 6. Overlay 생성
+    # ==========================================
+
+    overlay = create_phase_overlay(
+        image_rgb=image_rgb,
+        mask=mask,
+        alpha=0.45,
+    )
+
+    # ==========================================
+    # 7. NumPy 이미지 -> Base64 PNG
+    # ==========================================
+
+    try:
+
+        mask_image = to_b64(
+            color_mask
+        )
+
+        overlay_image = to_b64(
+            overlay
+        )
+
+    except Exception as e:
+
+        print(
+            f"Phase 이미지 변환 오류: {e}"
+        )
+
+        return {
+            "status": "error",
+            "message": (
+                "Phase 결과 이미지 생성 중 "
+                "오류가 발생했습니다."
+            ),
+        }
+
+    # ==========================================
+    # 8. 최종 결과 반환
+    # ==========================================
+
+    return {
+        "status": "success",
+
+        "message":
+            "Phase Segmentation 분석이 완료되었습니다.",
+
+        "image_width":
+            width,
+
+        "image_height":
+            height,
+
+        "overlay_image":
+            overlay_image,
+
+        "mask_image":
+            mask_image,
+
+        "phase_distribution":
+            phase_distribution,
+    }
 
 # ═══════════════════════════════════════════════════════
 # 직접 실행
