@@ -89,17 +89,13 @@ function ReferenceItem({ item, index }) {
   );
 }
 
-export default function ReferenceCard({ references, number = 4 }) {
+export default function ReferenceCard({ references }) {
   // 서버가 references 를 보내지 않은 이전 분석 기록은 카드를 숨긴다
   if (!Array.isArray(references)) return null;
 
   return (
     <div className="rounded-xl border border-slate-200 p-5">
       <div className="mb-3 flex items-center gap-3">
-        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white">
-          {number}
-        </span>
-
         <h4 className="font-bold">관련 문헌 검색 결과</h4>
       </div>
 
