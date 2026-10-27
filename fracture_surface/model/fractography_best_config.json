@@ -1,0 +1,31 @@
+{
+  "backbone": "convnext_small",
+  "img_size": 384,
+  "patch_size": 384,
+  "stride": 192,
+  "dilations": [
+    1,
+    2,
+    4,
+    6
+  ],
+  "class_names": [
+    "Cleavage",
+    "Ductile",
+    "Fatigue",
+    "Intergranular"
+  ],
+  "mean": [
+    0.485,
+    0.456,
+    0.406
+  ],
+  "std": [
+    0.229,
+    0.224,
+    0.225
+  ],
+  "inference": "원본을 patch_size 정사각 격자(stride)로 자르고 각 패치를 Resize((img_size,img_size)) → softmax 확률 평균",
+  "best_epoch": 24,
+  "val_custom_score": 0.7258137621911048
+}

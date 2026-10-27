@@ -41,12 +41,14 @@ from model import load_model
 # Grad-CAM++
 from gradcam import (
     GradCAMPlusPlus,
+    predict_sliding,
     cam_to_mask,
     split_solo_overlap,
     build_contour_image,
     draw_dashed_contour,
     extract_contours_json,
     to_b64,
+    summarize_gradcam_regions, 
 )
 
 # LLM 분석
@@ -55,6 +57,11 @@ from llm_service import (
     generate_compare_analysis,
 )
 
+# 보고서 생성
+from createReport import generate_report
+
+
+from rag_service import retrieve_references, format_references_for_prompt, public_references
 
 # ═══════════════════════════════════════════════════════
 # FastAPI 앱 생성
@@ -133,12 +140,13 @@ DEVICE = torch.device(
 MODEL_PATH = os.path.join(
     os.path.dirname(__file__),
     "model",
-    "fractography_best5.pth",
+    "fractography_best.pth",      # train_kaggle.py 결과 (같은 폴더에 fractography_best_config.json)
 )
 
 
-IMG_SIZE = 224
+IMG_SIZE = 224            # 유사 이미지 검색(ResNet18) 전용. CNN 입력 크기는 INFER_CFG["img_size"]
 NUM_CLASSES = 4
+CAM_MAX_CLASSES = 2       # Grad-CAM 을 계산할 최대 클래스 수 (CPU 부담: 패치 수 × 클래스 수 만큼 역전파)
 
 
 CNN_CLASSES = [
@@ -192,7 +200,7 @@ CLASS_COLORS_BGR = {
 # CNN 모델 로드
 # ═══════════════════════════════════════════════════════
 
-model = load_model(
+model, INFER_CFG = load_model(
     model_path=MODEL_PATH,
     device=DEVICE,
     num_classes=NUM_CLASSES,
@@ -244,30 +252,8 @@ gradcam_all = GradCAMPlusPlus(
 # 이미지 전처리
 # ═══════════════════════════════════════════════════════
 
-preprocess = transforms.Compose([
-    transforms.Resize(
-        IMG_SIZE + 32
-    ),
-
-    transforms.CenterCrop(
-        IMG_SIZE
-    ),
-
-    transforms.ToTensor(),
-
-    transforms.Normalize(
-        [
-            0.485,
-            0.456,
-            0.406,
-        ],
-        [
-            0.229,
-            0.224,
-            0.225,
-        ],
-    ),
-])
+# 전처리는 gradcam.make_patches() 에서 수행
+# (원본을 patch_size 격자로 자르고 각 패치를 img_size 로 리사이즈 — 중앙 크롭 없음)
 
 
 # ═══════════════════════════════════════════════════════
@@ -526,31 +512,12 @@ async def analyze_fracture(
     # 이미지 전처리
     # ═══════════════════════════════════════════════════
 
-    input_tensor = (
-        preprocess(
-            image
-        )
-        .unsqueeze(0)
-        .to(
-            DEVICE
-        )
+    probs_np_mean, patch_probs, patch_boxes = predict_sliding(
+        model, image, INFER_CFG, DEVICE,
     )
-
-
-    # ═══════════════════════════════════════════════════
-    # CNN 추론
-    # ═══════════════════════════════════════════════════
-
-    with torch.no_grad():
-
-        output = model(
-            input_tensor
-        )
-
-        probs_tensor = torch.softmax(
-            output,
-            dim=1,
-        )[0]
+    probs_tensor = torch.from_numpy(probs_np_mean)
+    print(f"슬라이딩 윈도우 패치 {len(patch_boxes)}개 → 평균 확률 "
+          + ", ".join(f"{n} {p * 100:.1f}%" for n, p in zip(CNN_CLASSES, probs_np_mean)))
 
 
     sorted_probs, sorted_indices = torch.sort(
@@ -617,6 +584,10 @@ async def analyze_fracture(
 
     gradcam_image = None
 
+    gradcam_summary = {}
+    
+    gradcam_png_bytes = None
+
     gradcam_layers = {}
 
     gradcam_masks = {}
@@ -630,12 +601,14 @@ async def analyze_fracture(
 
     try:
 
-        cams_dict, probs_np = (
-            gradcam_all
-            .generate_all_classes(
-                input_tensor,
-                num_classes=NUM_CLASSES,
-            )
+        probs_np = probs_np_mean
+        cam_classes = [
+            int(i) for i in np.argsort(-probs_np)[:CAM_MAX_CLASSES]
+            if probs_np[i] >= conf_thresh
+        ]
+        # 원본 해상도 (H,W) CAM — 패치별 CAM 을 이어 붙인 결과
+        cams_dict = gradcam_all.generate_sliding(
+            image, cam_classes, INFER_CFG, DEVICE,
         )
 
 
@@ -647,10 +620,7 @@ async def analyze_fracture(
             CNN_CLASSES
         ):
 
-            if (
-                probs_np[i]
-                < conf_thresh
-            ):
+            if i not in cams_dict:
                 continue
 
 
@@ -695,12 +665,31 @@ async def analyze_fracture(
         # 통합 Grad-CAM 이미지
         # ─────────────────────────────────────────────
 
-        gradcam_image = to_b64(
-            build_contour_image(
-                img_rgb,
-                solo_masks,
-                overlap_masks,
-            )
+                # 통합 Grad-CAM 이미지
+        contour_img = build_contour_image(
+            img_rgb,
+            solo_masks,
+            overlap_masks,
+        )
+
+        gradcam_image = to_b64(contour_img)
+
+        # LLM에 두 번째 이미지로 전달할 PNG bytes
+        _buf = io.BytesIO()
+        Image.fromarray(contour_img).save(_buf, format="PNG")
+        gradcam_png_bytes = _buf.getvalue()
+
+        # LLM에 전달할 영역 요약
+        probs_by_class = {
+            n: probs_tensor[i].item()
+            for i, n in enumerate(CNN_CLASSES)
+        }
+
+        gradcam_summary = summarize_gradcam_regions(
+            masks_dict,
+            overlap_masks,
+            probs_by_class,
+            (H, W),
         )
 
 
@@ -963,12 +952,44 @@ async def analyze_fracture(
     # Gemma 멀티모달 설명 생성
     # ═══════════════════════════════════════════════════
 
+    try:
+        references = retrieve_references(final_en)
+        references_text = format_references_for_prompt(references)
+        references_public = public_references(references)
+    except Exception as rag_error:
+        print(f"[RAG] 검색 실패, 기존 분석 계속 진행: {rag_error}")
+        references_text = ""
+        references_public = []
+
+    gradcam_llm_bytes = None
+    try:
+        final_mask = masks_dict.get(final_en)
+        if final_mask is not None and np.any(final_mask > 0):
+            aligned_rgb = img_rgb.copy()
+            contours, _ = cv2.findContours(final_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(aligned_rgb, contours, -1, (255, 80, 40), thickness=2, lineType=cv2.LINE_AA)
+            cam_buffer = io.BytesIO()
+            Image.fromarray(aligned_rgb).save(cam_buffer, format="PNG")
+            gradcam_llm_bytes = cam_buffer.getvalue()
+    except Exception as cam_error:
+        print(f"[Grad-CAM → Gemma] 오버레이 생성 실패: {cam_error}")
+    print(
+        "[Grad-CAM → Gemma]",
+        "이미지 전달 성공" if gradcam_llm_bytes else "이미지 없음",
+        "| 바이트:",
+        len(gradcam_llm_bytes) if gradcam_llm_bytes else 0
+    )
     llm_result = (
         generate_llm_analysis(
             prediction=prediction,
             confidence_percent=final_percent,
             material=material,
             image_bytes=image_bytes,
+            gradcam_summary=gradcam_summary,
+            probabilities=similarities,
+            decision_path=decision_path,
+            gradcam_image_bytes=gradcam_llm_bytes,
+            references_text=references_text,
         )
     )
 
@@ -1109,6 +1130,14 @@ async def analyze_fracture(
 
         "gradcam_contours":
             gradcam_contours,
+
+        "references": references_public,
+
+        "gradcam_summary":
+            gradcam_summary,
+
+        "decision_path":
+            decision_path,
 
 
         # ─────────────────────────────────────────────
@@ -1476,6 +1505,42 @@ async def analyze_phase(
 # ═══════════════════════════════════════════════════════
 # 직접 실행
 # ═══════════════════════════════════════════════════════
+@app.post("/report")
+async def make_report(payload: dict):
+
+    try:
+        conf_raw = str(payload.get("confidence", "0")).replace("%", "").strip()
+
+        try:
+            confidence_percent = float(conf_raw)
+        except ValueError:
+            confidence_percent = 0.0
+
+        prediction_en = payload.get("prediction_en", "")
+        prediction = payload.get("prediction") or KO_LABELS.get(prediction_en, "")
+
+        if prediction not in KO_LABELS.values():
+            return {"status": "error", "message": "분류 결과가 올바르지 않습니다."}
+
+        report = generate_report(
+            prediction=prediction,
+            prediction_en=prediction_en,
+            confidence_percent=confidence_percent,
+            material=payload.get("material", ""),
+            probabilities=payload.get("similarities", {}),
+            gradcam_summary=payload.get("gradcam_summary", {}),
+            decision_path=payload.get("decision_path", ""),
+            feature=payload.get("feature", ""),
+            obs1=payload.get("visual_observation_1", ""),
+            obs2=payload.get("visual_observation_2", ""),
+        )
+
+        return {"status": "success", **report}
+
+    except Exception as e:
+        print(f"보고서 생성 오류: {e}")
+        return {"status": "error", "message": "보고서 생성 중 오류가 발생했습니다."}
+
 
 if __name__ == "__main__":
 

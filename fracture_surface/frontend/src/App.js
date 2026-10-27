@@ -1,3 +1,5 @@
+
+import ReferenceCard from "./components/ReferenceCard";
 import {
   useState,
   useRef,
@@ -5,6 +7,8 @@ import {
   useMemo,
   useCallback,
 } from "react";
+
+import { createPortal } from "react-dom";
 
 import { addHistoryItem, fetchHistory, clearAllHistory } from "./firebase";
 
@@ -41,6 +45,13 @@ const MATERIAL_LABELS = {
   nickel_alloy: "니켈 합금",
   tool_steel: "공구강",
   unknown: "모름",
+};
+
+const PHASE_COLORS = {
+  Al: "#997F4C",
+  "Primary Si": "#4CB24C",
+  Al3Ni: "#194C99",
+  "Eutectic Si": "#CCCCCC",
 };
 
 const CONFIDENCE_BOX_STYLES = {
@@ -1057,15 +1068,12 @@ function ModalShell({
               </p>
             )}
           </div>
-
-          <button
-            onClick={
-              onClose
-            }
-            className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition text-lg"
-          >
-            ×
-          </button>
+        <button
+          onClick={onClose}
+          className="w-9 h-9 rounded-full ..."
+        >
+          ×
+        </button>
         </div>
 
         <div className="overflow-y-auto p-7">
@@ -1073,6 +1081,212 @@ function ModalShell({
         </div>
       </div>
     </div>
+  );
+}
+
+function ReportModal({ result, previewUrl, report, loading, error, onClose }) {
+  const probs = Object.entries(result.similarities || {}).sort((a, b) => {
+    const va = parseFloat(a[1]);
+    const vb = parseFloat(b[1]);
+    return (isNaN(vb) ? -1 : vb) - (isNaN(va) ? -1 : va);
+  });
+
+  const statusStyle =
+    CONFIDENCE_BOX_STYLES[report?.confidence_status] ||
+    CONFIDENCE_BOX_STYLES.medium;
+
+  const Section = ({ no, title, children }) => (
+    <section className="mt-7 break-inside-avoid">
+      <h3 className="flex items-center gap-2 text-base font-bold text-slate-900 border-b border-slate-300 pb-2">
+        <span className="w-6 h-6 rounded-full bg-[#172536] text-white text-xs flex items-center justify-center">
+          {no}
+        </span>
+        {title}
+      </h3>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+
+  return createPortal(
+    <div className="report-overlay fixed inset-0 z-[200] bg-slate-950/60 overflow-y-auto p-5">
+      <style>{`
+        @media print {
+          #root { display: none !important; }
+          .report-overlay {
+            position: static !important;
+            background: #fff !important;
+            padding: 0 !important;
+            overflow: visible !important;
+          }
+          .report-sheet {
+            box-shadow: none !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            border-radius: 0 !important;
+          }
+          .no-print { display: none !important; }
+          .report-sheet, .report-sheet * {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+        }
+      `}</style>
+
+      <div className="report-sheet bg-white max-w-4xl mx-auto rounded-2xl shadow-2xl p-9 text-slate-900">
+        {/* 상단 버튼 */}
+        <div className="no-print flex justify-end gap-2 mb-4">
+          <button
+            onClick={() => window.print()}
+            disabled={!report}
+            className="px-4 py-2 rounded-lg bg-[#172536] text-white text-sm font-semibold hover:bg-slate-700 disabled:opacity-40"
+          >
+            PDF 저장 / 인쇄
+          </button>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 rounded-lg bg-slate-100 text-slate-700 text-sm font-semibold hover:bg-slate-200"
+          >
+            닫기
+          </button>
+        </div>
+
+        {/* 제목 */}
+        <div className="border-b-2 border-[#172536] pb-4">
+          <p className="text-xs tracking-[0.18em] uppercase text-blue-600 font-bold">
+            Fracture Analysis Report
+          </p>
+          <h2 className="text-2xl font-bold mt-1">파손단면 AI 분석 보고서</h2>
+          <p className="text-xs text-slate-500 mt-2">
+            생성 시각: {report?.generated_at || "-"} · 재질:{" "}
+            {report?.material_label || "-"}
+          </p>
+        </div>
+
+        {/* 1. 이미지 */}
+        <Section no="1" title="입력 이미지 및 Grad-CAM++ 결과">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-slate-500 mb-1">입력 이미지</p>
+              <div className="h-[260px] rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden">
+                {previewUrl && (
+                  <img src={previewUrl} alt="입력 이미지" className="w-full h-full object-contain" />
+                )}
+              </div>
+            </div>
+            <div>
+              <p className="text-xs text-slate-500 mb-1">Grad-CAM++ (모델 주목 영역)</p>
+              <div className="h-[260px] rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden">
+                {result.gradcam_image ? (
+                  <img src={result.gradcam_image} alt="Grad-CAM++" className="w-full h-full object-contain" />
+                ) : (
+                  <p className="text-xs text-slate-400">Grad-CAM++ 이미지 없음</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </Section>
+
+        {/* 2. 분류 결과 */}
+        <Section no="2" title="분류 결과">
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-5 text-center">
+            <p className="text-xs text-slate-500 uppercase tracking-[0.16em]">
+              Final classification
+            </p>
+            <p className="text-3xl font-black text-blue-700 mt-1">
+              {result.prediction_en} · {result.display_prediction || result.prediction}
+            </p>
+            <p className="text-2xl font-black mt-1">{result.confidence}</p>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {probs.map(([name, value]) => {
+              const percent = Math.max(0, Math.min(100, parseFloat(value) || 0));
+              const isPred = name === (result.display_prediction || result.prediction);
+              return (
+                <div key={name}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className={isPred ? "font-bold" : value === "-" ? "text-slate-300" : "text-slate-500"}>
+                      {name} ({EN_NAMES[name]})
+                    </span>
+                    <span className={isPred ? "font-bold text-blue-700" : "text-slate-500"}>
+                      {value}
+                    </span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${isPred ? "bg-blue-600" : "bg-slate-300"}`}
+                      style={{ width: `${percent}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-slate-400 mt-2">
+            "-"는 Grad-CAM++에서 검출되지 않은 유형입니다.
+          </p>
+        </Section>
+
+        {loading && (
+          <div className="mt-10 text-center py-10">
+            <div className="w-9 h-9 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <p className="text-sm text-slate-500">AI가 보고서를 작성하고 있습니다...</p>
+          </div>
+        )}
+
+        {error && !loading && (
+          <div className="mt-8 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+            {error}
+          </div>
+        )}
+
+        {report && !loading && (
+          <>
+            <Section no="3" title="파괴 유형의 특징">
+              <p className="text-sm leading-7 text-slate-700">{report.characteristics}</p>
+            </Section>
+
+            <Section no="4" title="분류 근거 (Grad-CAM++ 기반)">
+              <p className="text-sm leading-7 text-slate-700">{report.basis}</p>
+            </Section>
+
+            <Section no="5" title="추정 파손 원인">
+              <p className="text-sm leading-7 text-slate-700">{report.cause}</p>
+            </Section>
+
+            <Section no="6" title="신뢰도 및 정확한 원인 분석을 위한 확인 사항">
+              <div className={`rounded-lg border p-4 ${statusStyle}`}>
+                <p className="text-sm leading-6">{report.confidence_comment}</p>
+              </div>
+
+              <p className="text-sm text-slate-700 leading-7 mt-4">{report.next_steps_note}</p>
+
+              <ol className="mt-3 space-y-3">
+                {report.next_steps.map((s, i) => (
+                  <li key={i} className="flex gap-3 break-inside-avoid">
+                    <span className="w-6 h-6 shrink-0 rounded-full bg-slate-200 text-slate-700 text-xs font-bold flex items-center justify-center">
+                      {i + 1}
+                    </span>
+                    <div>
+                      <p className="text-sm font-bold">{s.title}</p>
+                      <p className="text-sm text-slate-600 leading-6">{s.detail}</p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </Section>
+
+            <p className="text-[11px] text-slate-400 leading-5 mt-8 border-t border-slate-200 pt-3">
+              본 보고서는 이미지와 입력 정보를 기반으로 한 AI 추정 결과이며
+              실제 파손 원인을 확정하는 자료가 아닙니다. 정확한 원인 규명을 위해서는
+              전문가의 검토와 추가 시험이 필요합니다.
+            </p>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1136,12 +1350,6 @@ export default function App() {
   ] = useState(false);
 
   const [
-    showAIModal,
-    setShowAIModal,
-  ] = useState(false);
-
-
-  const [
     showSimilarModal,
     setShowSimilarModal,
   ] = useState(false);
@@ -1151,7 +1359,14 @@ export default function App() {
     setShowGradcamModal,
   ] = useState(false);
 
+  const [showReport, setShowReport] = useState(false);
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
+
   const [activeTab, setActiveTab] = useState("fracture");
+
+  const [detailTab, setDetailTab] = useState("llm");
 
   const phaseFileRef = useRef(null);
 
@@ -1598,10 +1813,9 @@ useEffect(() => {
         );
 
         setResult(null);
-
-        setShowAIModal(
-          false
-        );
+        setReport(null);
+        setShowReport(false);
+        setReportError("");
 
         setShowSimilarModal(
           false
@@ -1654,6 +1868,10 @@ useEffect(() => {
         item.result
       );
 
+      setReport(null);
+      setShowReport(false);
+      setReportError("");
+
       setPreviewUrl(
         item.image
       );
@@ -1666,10 +1884,6 @@ useEffect(() => {
         item.result
           .material ||
           ""
-      );
-
-      setShowAIModal(
-        false
       );
 
       setShowSimilarModal(
@@ -1760,9 +1974,10 @@ const clearHistory = async () => {
       );
 
       try {
-        setUploading(
-          true
-        );
+        setUploading(true);
+        setReport(null);
+        setShowReport(false);
+        setReportError("");
 
         const res =
           await fetch(
@@ -1812,6 +2027,54 @@ const clearHistory = async () => {
         );
       }
     };
+
+    const openReport = async () => {
+    if (!result) {
+      alert("먼저 이미지를 분석해주세요.");
+      return;
+    }
+
+    setShowReport(true);
+
+    if (report) return; // 이미 만든 보고서는 재사용
+
+    try {
+      setReportLoading(true);
+      setReportError("");
+
+      const res = await fetch("http://localhost:8000/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prediction: result.prediction,
+          prediction_en: result.prediction_en,
+          confidence: result.confidence,
+          material: result.material,
+          similarities: result.similarities,
+          gradcam_summary: result.gradcam_summary || {},
+          decision_path: result.decision_path || "",
+          feature: result.feature,
+          visual_observation_1: result.visual_observation_1,
+          visual_observation_2: result.visual_observation_2,
+        }),
+      });
+
+      if (!res.ok) throw new Error(`서버 오류: ${res.status}`);
+
+      const data = await res.json();
+
+      if (data.status !== "success") {
+        throw new Error(data.message || "보고서 생성에 실패했습니다.");
+      }
+
+      setReport(data);
+    } catch (err) {
+      console.error("보고서 생성 오류:", err);
+      setReportError(err.message || "보고서 생성 중 오류가 발생했습니다.");
+    } finally {
+      setReportLoading(false);
+    }
+  };
 
   const openCompare =
     () => {
@@ -2189,7 +2452,7 @@ const clearHistory = async () => {
                             </button>
 
                           </div>
-                          
+
                           <p className="text-[11px] text-slate-400 mt-1">
                             {item.time}
                           </p>
@@ -2289,12 +2552,9 @@ const clearHistory = async () => {
 
               <div className="grid xl:grid-cols-[1fr_1fr_0.82fr] min-h-[665px]">
 
-                {/* =========================
-                    입력 이미지
-                ========================== */}
+                {/* 입력 이미지 */}
                 <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200 flex flex-col">
 
-                  {/* 제목 */}
                   <div className="flex items-center justify-between">
                     <h3 className="font-bold text-base">
                       입력 이미지
@@ -2302,9 +2562,7 @@ const clearHistory = async () => {
 
                     {previewUrl && (
                       <button
-                        onClick={() =>
-                          fileRef.current?.click()
-                        }
+                        onClick={() => fileRef.current?.click()}
                         className="text-xs text-blue-600 font-semibold hover:text-blue-800"
                       >
                         이미지 변경
@@ -2312,9 +2570,7 @@ const clearHistory = async () => {
                     )}
                   </div>
 
-                  {/* 이미지 + 입력 컨트롤 전체를 세로 중앙 배치 */}
                   <div className="flex-1 flex flex-col justify-center py-5">
-
                     <label
                       htmlFor="file-input"
                       className="h-[350px] rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center cursor-pointer"
@@ -2330,11 +2586,9 @@ const clearHistory = async () => {
                           <div className="w-12 h-12 rounded-full bg-slate-200 mx-auto flex items-center justify-center text-xl mb-3">
                             +
                           </div>
-
                           <p className="font-semibold text-slate-700">
                             파손단면 이미지를 업로드하세요
                           </p>
-
                           <p className="text-xs text-slate-400 mt-2">
                             클릭하여 이미지 선택
                           </p>
@@ -2351,60 +2605,18 @@ const clearHistory = async () => {
                       className="hidden"
                     />
 
-                    {/* 재질 + 분석 버튼 */}
                     <div className="mt-4 flex gap-3">
                       <select
                         value={material}
-                        onChange={(e) =>
-                          setMaterial(
-                            e.target.value
-                          )
-                        }
+                        onChange={(e) => setMaterial(e.target.value)}
                         className="flex-1 h-11 px-3 rounded-lg border border-slate-300 bg-white text-sm outline-none focus:border-blue-500"
                       >
-                        <option value="">
-                          재질 선택
-                        </option>
-
-                        <option value="steel">
-                          강 (Steel)
-                        </option>
-
-                        <option value="stainless_steel">
-                          스테인리스강
-                        </option>
-
-                        <option value="aluminum">
-                          알루미늄
-                        </option>
-
-                        <option value="titanium">
-                          티타늄
-                        </option>
-
-                        <option value="cast_iron">
-                          주철
-                        </option>
-
-                        <option value="copper">
-                          구리
-                        </option>
-
-                        <option value="magnesium">
-                          마그네슘 합금
-                        </option>
-
-                        <option value="nickel_alloy">
-                          니켈 합금
-                        </option>
-
-                        <option value="tool_steel">
-                          공구강
-                        </option>
-
-                        <option value="unknown">
-                          모름
-                        </option>
+                        <option value="">재질 선택</option>
+                        {Object.entries(MATERIAL_LABELS).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
                       </select>
 
                       <button
@@ -2412,27 +2624,19 @@ const clearHistory = async () => {
                         disabled={uploading}
                         className="px-7 h-11 rounded-lg bg-[#172536] text-white text-sm font-semibold hover:bg-slate-700 disabled:opacity-50 transition"
                       >
-                        {uploading
-                          ? "분석 중..."
-                          : "분석 시작"}
+                        {uploading ? "분석 중..." : "분석 시작"}
                       </button>
                     </div>
                   </div>
                 </div>
 
-
-                {/* =========================
-                    Grad-CAM++
-                ========================== */}
+                {/* Grad-CAM++ */}
                 <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200 flex flex-col">
-
-                  {/* 제목 */}
                   <div className="flex items-center justify-between">
                     <div>
                       <h3 className="font-bold text-base">
                         Grad-CAM++ 결과
                       </h3>
-
                       <p className="text-xs text-slate-400 mt-1">
                         모델이 판단에 활용한 영역
                       </p>
@@ -2440,15 +2644,11 @@ const clearHistory = async () => {
 
                     {result &&
                       (result.gradcam_masks ||
-    result.gradcam_layers ||
-    (result.gradcam_contours &&
-      Object.keys(result.gradcam_contours).length > 0)) && (
+                        result.gradcam_layers ||
+                        (result.gradcam_contours &&
+                          Object.keys(result.gradcam_contours).length > 0)) && (
                         <button
-                          onClick={() =>
-                            setShowGradcamModal(
-                              true
-                            )
-                          }
+                          onClick={() => setShowGradcamModal(true)}
                           className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 transition"
                         >
                           확대 보기
@@ -2456,13 +2656,12 @@ const clearHistory = async () => {
                       )}
                   </div>
 
-                  {/* Grad-CAM 전체를 세로 중앙 배치 */}
                   <div className="flex-1 flex flex-col justify-center py-5">
                     {result &&
                     (result.gradcam_masks ||
-  result.gradcam_layers ||
-  (result.gradcam_contours &&
-    Object.keys(result.gradcam_contours).length > 0)) ? (
+                      result.gradcam_layers ||
+                      (result.gradcam_contours &&
+                        Object.keys(result.gradcam_contours).length > 0)) ? (
                       <GradcamView
                         result={result}
                         chipSize="text-[11px]"
@@ -2474,7 +2673,6 @@ const clearHistory = async () => {
                           <p className="text-sm font-semibold text-slate-500">
                             분석 전
                           </p>
-
                           <p className="text-xs text-slate-400 mt-2">
                             분석을 실행하면 시각화 결과가 표시됩니다.
                           </p>
@@ -2484,35 +2682,33 @@ const clearHistory = async () => {
                   </div>
                 </div>
 
-
-                {/* =========================
-                    분석 결과
-                ========================== */}
+                {/* 분석 결과 */}
                 <div className="p-5 flex flex-col">
-
-                  <h3 className="font-bold text-base">
-                    분석 결과
-                  </h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-bold text-base">
+                      분석 결과
+                    </h3>
+                    <button
+                      onClick={openReport}
+                      disabled={!result || reportLoading}
+                      className="px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {reportLoading ? "생성 중..." : "AI 보고서 생성"}
+                    </button>
+                  </div>
 
                   {result ? (
                     <div className="flex-1 flex flex-col pt-4">
-
-                      {/* 최종 예측 */}
                       <div className="rounded-xl bg-gradient-to-br from-blue-50 to-slate-50 border border-blue-100 py-5 px-5 text-center">
-
                         <p className="text-xs text-slate-500 uppercase tracking-[0.16em]">
                           Predicted fracture
                         </p>
-
                         <p className="text-3xl font-black text-blue-700 mt-2">
-                          {result.display_prediction ||
-                            result.prediction}
+                          {result.display_prediction || result.prediction}
                         </p>
-
                         <p className="text-4xl font-black text-slate-900 mt-1">
                           {result.confidence}
                         </p>
-
                         <span
                           className={`inline-block mt-3 px-3 py-1 rounded-full border text-xs font-bold ${confidenceStyle}`}
                         >
@@ -2520,136 +2716,59 @@ const clearHistory = async () => {
                         </span>
                       </div>
 
-
-                      {/* 전체 예측 확률 */}
                       {result.similarities && (
                         <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="text-xs font-bold text-slate-600">
-                              전체 예측 확률
-                            </p>
-
-                            <p className="text-[10px] text-slate-400">
-                              예측 확률
-                            </p>
-                          </div>
+                          <p className="text-xs font-bold text-slate-600 mb-3">
+                            전체 예측 확률
+                          </p>
 
                           <div className="space-y-3">
-                            {Object.entries(
-                              result.similarities
-                            )
-                              .sort((a, b) => {
-  const va = parseFloat(a[1]);
-  const vb = parseFloat(b[1]);
-  return (isNaN(vb) ? -1 : vb) - (isNaN(va) ? -1 : va);
-})
-                              .map(
-                                ([name, value]) => {
-                                  const percent =
-                                    Math.max(
-                                      0,
-                                      Math.min(
-                                        100,
-                                        parseFloat(
-                                          value
-                                        ) || 0
-                                      )
-                                    );
+                            {Object.entries(result.similarities)
+                              .sort((a, b) => (parseFloat(b[1]) || 0) - (parseFloat(a[1]) || 0))
+                              .map(([name, value]) => {
+                                const percent = Math.max(
+                                  0,
+                                  Math.min(100, parseFloat(value) || 0)
+                                );
+                                const isPredicted =
+                                  name === (result.display_prediction || result.prediction) ||
+                                  EN_NAMES[name] === result.prediction_en;
 
-                                  const isPredicted =
-                                    name ===
-                                      (result.display_prediction ||
-                                        result.prediction) ||
-                                    EN_NAMES[
-                                      name
-                                    ] ===
-                                      result.prediction_en;
-
-                                  return (
-                                    <div key={name}>
-
-                                      <div className="flex items-center justify-between gap-3 mb-1">
-
-                                        <span
-                                          className={`text-[11px] ${
-                                            isPredicted
-                                              ? "font-bold text-slate-900"
-                                              : value === "-"
-                                              ? "font-medium text-slate-300"
-                                              : "font-medium text-slate-500"
-                                          }`}
-                                        >
-                                          {name}
-                                        </span>
-
-                                        <span
-                                          className={`text-[11px] tabular-nums ${
-                                            isPredicted
-                                              ? "font-bold text-blue-700"
-                                              : "font-semibold text-slate-500"
-                                          }`}
-                                        >
-                                          {typeof value ===
-                                          "number"
-                                            ? `${value.toFixed(
-                                                1
-                                              )}%`
-                                            : value}
-                                        </span>
-                                      </div>
-
-                                      {/* 확률 막대 */}
-                                      <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                        <div
-                                          className={`h-full rounded-full transition-all duration-500 ${
-                                            isPredicted
-                                              ? "bg-blue-600"
-                                              : "bg-slate-300"
-                                          }`}
-                                          style={{
-                                            width: `${percent}%`,
-                                          }}
-                                        />
-                                      </div>
+                                return (
+                                  <div key={name}>
+                                    <div className="flex justify-between text-[11px] mb-1">
+                                      <span className={isPredicted ? "font-bold" : "text-slate-500"}>
+                                        {name}
+                                      </span>
+                                      <span className={isPredicted ? "font-bold text-blue-700" : "text-slate-500"}>
+                                        {typeof value === "number" ? `${value.toFixed(1)}%` : value}
+                                      </span>
                                     </div>
-                                  );
-                                }
-                              )}
+                                    <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full ${isPredicted ? "bg-blue-600" : "bg-slate-300"}`}
+                                        style={{ width: `${percent}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                );
+                              })}
                           </div>
                         </div>
                       )}
 
-
-                      {/* 재질 / 상태 */}
                       <div className="mt-4 grid grid-cols-2 gap-3">
-
                         <div className="rounded-lg border border-slate-200 p-3">
-                          <p className="text-[11px] text-slate-400">
-                            재질
-                          </p>
-
-                          <p className="text-sm font-bold mt-1">
-                            {materialText}
-                          </p>
+                          <p className="text-[11px] text-slate-400">재질</p>
+                          <p className="text-sm font-bold mt-1">{materialText}</p>
                         </div>
-
                         <div className="rounded-lg border border-slate-200 p-3">
-                          <p className="text-[11px] text-slate-400">
-                            상태
-                          </p>
-
-                          <p className="text-sm font-bold mt-1">
-                            {confidenceLabel}
-                          </p>
+                          <p className="text-[11px] text-slate-400">상태</p>
+                          <p className="text-sm font-bold mt-1">{confidenceLabel}</p>
                         </div>
                       </div>
 
-
-                      {/* 신뢰도 안내 */}
-                      <div
-                        className={`mt-3 rounded-lg border p-3 ${confidenceStyle}`}
-                      >
+                      <div className={`mt-3 rounded-lg border p-3 ${confidenceStyle}`}>
                         <p className="text-xs leading-5">
                           {result.confidence_message}
                         </p>
@@ -2658,203 +2777,188 @@ const clearHistory = async () => {
                   ) : (
                     <div className="flex-1 flex items-center justify-center">
                       <div className="w-full h-[350px] rounded-xl bg-slate-50 border border-dashed border-slate-300 flex items-center justify-center">
-                        <div className="text-center px-5">
-                          <p className="text-sm font-semibold text-slate-500">
-                            분석 결과 없음
-                          </p>
-
-                          <p className="text-xs text-slate-400 mt-2">
-                            이미지를 선택하고 분석을 시작하세요.
-                          </p>
-                        </div>
+                        <p className="text-sm text-slate-500">
+                          이미지를 선택하고 분석을 시작하세요.
+                        </p>
                       </div>
                     </div>
                   )}
                 </div>
               </div>
 
-
-              {/* =========================
-                  기능 버튼
-              ========================== */}
+              {/* 하단 기능 탭 */}
               <div className="border-t border-slate-200 p-5">
-
-                <div className="grid md:grid-cols-2 gap-4">
-
-                  {/* AI 상세 분석 */}
-                  <button
-                    onClick={() => {
-                      if (!result) {
-                        alert(
-                          "먼저 이미지를 분석해주세요."
-                        );
-
-                        return;
-                      }
-
-                      setShowAIModal(
-                        true
-                      );
-                    }}
-                    className="group rounded-xl bg-blue-600 hover:bg-blue-700 text-white p-4 text-left transition shadow-sm"
-                  >
-                    <div className="flex items-center gap-3">
-
-                      <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center font-bold">
-                        AI
-                      </div>
-
-                      <div>
-                        <p className="font-bold">
-                          AI 상세 분석
-                        </p>
-
-                        <p className="text-xs text-blue-100 mt-0.5">
-                          LLM 설명
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-
-
-                  {/* Phase */}
-                  
-
-
-                  {/* 유사 이미지 */}
-                  <button
-                    onClick={() => {
-                      if (!result) {
-                        alert(
-                          "먼저 이미지를 분석해주세요."
-                        );
-
-                        return;
-                      }
-
-                      setShowSimilarModal(
-                        true
-                      );
-                    }}
-                    className="rounded-xl bg-violet-600 hover:bg-violet-700 text-white p-4 text-left transition shadow-sm"
-                  >
-                    <div className="flex items-center gap-3">
-
-                      <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center font-bold">
-                        ≋
-                      </div>
-
-                      <div>
-                        <p className="font-bold">
-                          유사 이미지
-                        </p>
-
-                        <p className="text-xs text-violet-100 mt-0.5">
-                          Top-3 사례
-                        </p>
-                      </div>
-                    </div>
-                  </button>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { key: "llm", label: "LLM 설명" },
+                    { key: "rag", label: "관련 문헌 검색 결과" },
+                    { key: "similar", label: "유사 이미지" },
+                  ].map((tab) => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setDetailTab(tab.key)}
+                      className={`rounded-xl px-4 py-3 text-sm font-bold border transition ${
+                        detailTab === tab.key
+                          ? "bg-[#172536] text-white border-[#172536]"
+                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
+
+                {result && (
+                  <div className="mt-5 rounded-xl border border-slate-200 p-5">
+                    {detailTab === "llm" && (
+                      <div className="space-y-4">
+                        <h3 className="font-bold">멀티모달 LLM 분석 설명</h3>
+                        {[
+                          result.feature,
+                          result.visual_observation_1,
+                          result.visual_observation_2,
+                          result.mechanism_relation,
+                          result.cause_explanation,
+                        ]
+                          .filter(Boolean)
+                          .map((text, i) => (
+                            <p key={i} className="text-sm leading-7 text-slate-700">
+                              {text}
+                            </p>
+                          ))}
+                        {!result.feature && !result.visual_observation_1 && (
+                          <p className="text-sm text-slate-400">
+                            생성된 설명이 없습니다.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {detailTab === "rag" && (
+                      <ReferenceCard references={result.references || []} />
+                    )}
+
+                    {detailTab === "similar" && (
+                      <div>
+                        <h3 className="font-bold mb-4">
+                          유사 이미지 Top-3
+                        </h3>
+
+                        {result.similar_images?.length > 0 ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            {result.similar_images.slice(0, 3).map((item, index) => (
+                              <div
+                                key={index}
+                                className="rounded-xl border border-slate-200 overflow-hidden bg-white"
+                              >
+                                <div className="h-48 bg-slate-50">
+                                  <img
+                                    src={
+                                      item.image_url?.startsWith("http")
+                                        ? item.image_url
+                                        : `http://localhost:8000${item.image_url}`
+                                    }
+                                    alt={`유사 이미지 ${index + 1}`}
+                                    className="w-full h-full object-contain"
+                                  />
+                                </div>
+
+                                <div className="p-4">
+                                  <p className="font-bold text-sm">
+                                    Top {index + 1}
+                                  </p>
+
+                                  <p className="text-xs text-slate-500 mt-1">
+                                    유형: {item.class_name || item.label || "-"}
+                                  </p>
+
+                                  <p className="text-sm font-semibold text-blue-600 mt-2">
+                                    유사도: {
+                                      typeof item.similarity === "number"
+                                        ? `${(item.similarity * 100).toFixed(1)}%`
+                                        : item.similarity || "-"
+                                    }
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-400 py-6 text-center">
+                            유사 이미지 결과가 없습니다.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
-
-            <div className="mt-5 flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4">
-              <div className="w-2 h-2 rounded-full bg-blue-600 mt-2 shrink-0" />
-
-              <p className="text-sm text-slate-500 leading-6">
-                메인 화면에서는 최종 파손 유형과 전체 예측 확률을
-                함께 제공합니다. 상세 특징과 예상 원인은 AI 상세 분석에서,
-                유사 사례는 유사 이미지에서 확인할 수 있으며 분석 결과 비교는
-                왼쪽 분석 기록에서 두 결과를 선택해 실행할 수 있습니다.
-              </p>
-            </div>
-          
               </>
             ) : (
               <>
+                {/* Phase 분석 */}
+                <div className="mb-6 flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.18em] text-emerald-600 font-bold">
+                      Phase Analysis
+                    </p>
+                    <h2 className="text-2xl font-bold mt-1">
+                      Phase 이미지 분석
+                    </h2>
+                    <p className="text-sm text-slate-500 mt-2">
+                      현미경 조직 이미지에서 영역별 Phase를 분류하고 분포를 확인합니다.
+                    </p>
+                  </div>
 
-              {/* 제목 */}
-              <div className="mb-6 flex items-start justify-between gap-6">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.18em] text-emerald-600 font-bold">
-                    Phase Analysis
-                  </p>
-
-                  <h2 className="text-2xl font-bold mt-1">
-                    Phase 이미지 분석
-                  </h2>
-
-                  <p className="text-sm text-slate-500 mt-2">
-                    현미경 조직 이미지에서 영역별 Phase를 분류하고 분포를 확인합니다.
-                  </p>
+                  <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 shrink-0">
+                    <p className="text-xs font-semibold text-emerald-800">
+                      Phase 분석은 별도의 현미경 조직 이미지를 사용합니다.
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      파단면 이미지와 Phase 분석용 조직 이미지는 서로 다른 입력입니다.
+                    </p>
+                  </div>
                 </div>
+           
+                {/* Phase 분석 메인 카드 */}
+                <section className="bg-white rounded-[22px] border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="grid xl:grid-cols-3">
 
-                <div className="hidden xl:block max-w-[430px] rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3">
-                  <p className="text-xs font-semibold text-emerald-800 leading-5">
-                    Phase 분석은 별도의 현미경 조직 이미지를 사용합니다.
-                  </p>
+                    {/* 1. 입력 이미지 */}
+                    <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200 flex flex-col">
+                      <div className="flex items-center justify-between mb-5">
+                        <div>
+                          <h3 className="font-bold text-base">입력 이미지</h3>
+                          <p className="text-xs text-slate-400 mt-1">
+                            Phase 분석용 현미경 조직 이미지
+                          </p>
+                        </div>
 
-                  <p className="text-xs text-slate-500 mt-1 leading-5">
-                    파단면 이미지와 Phase 분석용 조직 이미지는 서로 다른 입력입니다.
-                  </p>
-                </div>
-              </div>
-
-              {/* Phase 메인 카드 */}
-              <section className="bg-white rounded-[22px] border border-slate-200 shadow-sm overflow-hidden">
-                <div className="grid xl:grid-cols-[1fr_1fr_0.82fr] min-h-[560px]">
-
-                  {/* Phase 입력 이미지 */}
-                  <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200 flex flex-col">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h3 className="font-bold text-base">
-                          입력 이미지
-                        </h3>
-
-                        <p className="text-xs text-slate-400 mt-1">
-                          Phase 분석용 현미경 조직 이미지
-                        </p>
+                        {phasePreviewUrl && (
+                          <button
+                            onClick={() => phaseFileRef.current?.click()}
+                            className="text-xs text-emerald-600 font-semibold"
+                          >
+                            이미지 변경
+                          </button>
+                        )}
                       </div>
 
-                      {phasePreviewUrl && (
-                        <button
-                          onClick={() =>
-                            phaseFileRef.current?.click()
-                          }
-                          className="text-xs text-emerald-600 font-semibold hover:text-emerald-800"
-                        >
-                          이미지 변경
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="flex-1 flex flex-col justify-center py-5">
                       <label
                         htmlFor="phase-file-input"
-                        className="h-[350px] rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center cursor-pointer"
+                        className="h-[350px] rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden cursor-pointer"
                       >
                         {phasePreviewUrl ? (
                           <img
                             src={phasePreviewUrl}
-                            alt="Phase 입력 이미지"
+                            alt="Phase 입력"
                             className="w-full h-full object-contain"
                           />
                         ) : (
-                          <div className="text-center px-6">
-                            <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center text-xl mb-3">
-                              +
-                            </div>
-
-                            <p className="font-semibold text-slate-700">
-                              현미경 조직 이미지를 업로드하세요
-                            </p>
-
-                            <p className="text-xs text-slate-400 mt-2">
-                              클릭하여 Phase 분석용 이미지 선택
-                            </p>
-                          </div>
+                          <p className="text-sm text-slate-400 text-center px-4">
+                            현미경 조직 이미지를 업로드하세요
+                          </p>
                         )}
                       </label>
 
@@ -2870,714 +2974,296 @@ const clearHistory = async () => {
                       <button
                         onClick={handlePhaseAnalyze}
                         disabled={!phaseFile || phaseLoading}
-                        className="mt-4 w-full h-11 rounded-lg bg-[#172536] text-white text-sm font-semibold hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                        className="mt-4 h-11 bg-[#172536] text-white rounded-lg font-semibold disabled:opacity-40"
                       >
-                        {phaseLoading
-                          ? "Phase 분석 중..."
-                          : "Phase 분석 시작"}
+                        {phaseLoading ? "Phase 분석 중..." : "Phase 분석 시작"}
                       </button>
                     </div>
-                  </div>
 
-                  {/* ==========================================
-                      Phase Segmentation 결과
-                  ========================================== */}
+                    {/* 2. Segmentation 결과 */}
+                    <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200">
+                      <div className="mb-5">
+                        <h3 className="font-bold text-base">
+                          Phase Segmentation 결과
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          AI가 분류한 영역별 Phase 시각화
+                        </p>
+                      </div>
 
-                  <div className="p-5 border-b xl:border-b-0 xl:border-r border-slate-200 flex flex-col">
-
-                    <div>
-                      <h3 className="font-bold text-base">
-                        Phase Segmentation 결과
-                      </h3>
-
-                      <p className="text-xs text-slate-400 mt-1">
-                        AI가 분류한 영역별 Phase 시각화
-                      </p>
-                    </div>
-
-                    <div className="flex-1 flex flex-col justify-center py-5">
-
-                      <div className="w-full h-[350px] rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex items-center justify-center">
-
-                        {phaseLoading ? (
-
-                          <div className="text-center">
-
-                            <div className="w-9 h-9 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-
-                            <p className="text-sm text-slate-500">
-                              Phase 분석 중...
-                            </p>
-
-                          </div>
-
-                        ) : phaseResult?.overlay_image ? (
-
+                      {/* Segmentation 결과 이미지 */}
+                      <div className="h-[350px] rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-center overflow-hidden">
+                        {phaseResult?.overlay_image ? (
                           <img
                             src={phaseResult.overlay_image}
-                            alt="Phase Segmentation 결과"
+                            alt="Phase Segmentation"
                             className="w-full h-full object-contain"
                           />
-
                         ) : (
-
-                          <div className="text-center px-6">
-
-                            <div className="w-14 h-14 rounded-full bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center font-bold text-xl">
-                              P
-                            </div>
-
-                            <p className="text-sm font-semibold text-slate-600 mt-4">
-                              Segmentation 결과 없음
-                            </p>
-
-                            <p className="text-xs text-slate-400 mt-2 leading-5">
-                              Phase 이미지를 업로드하고 분석을 시작하세요.
-                            </p>
-
-                          </div>
-
+                          <p className="text-sm text-slate-400">
+                            {phaseLoading ? "분석 중..." : "분석 결과 없음"}
+                          </p>
                         )}
-
                       </div>
 
-                      {/* 분석 오류 */}
+                      {/* Phase 색상 범례 */}
+                      <div className="flex flex-wrap gap-x-4 gap-y-2 mt-4">
+                        {[
+                          ["Al", "Al"],
+                          ["Primary Si", "Primary Si"],
+                          ["Al₃Ni", "Al3Ni"],
+                          ["Eutectic Si", "Eutectic Si"],
+                        ].map(([label, key]) => (
+                          <div key={key} className="flex items-center gap-2">
+                            <span
+                              className="w-3 h-3 rounded-sm border border-slate-200"
+                              style={{ backgroundColor: PHASE_COLORS[key] }}
+                            />
+                            <span className="text-xs text-slate-600">
+                              {label}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
 
+                      {/* Phase 분석 오류 */}
                       {phaseError && (
-
-                        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3">
-
-                          <p className="text-xs text-red-600">
-                            {phaseError}
-                          </p>
-
-                        </div>
-
+                        <p className="text-xs text-red-600 mt-3">
+                          {phaseError}
+                        </p>
                       )}
-
                     </div>
 
-                  </div>
+                    {/* 3. Phase 분석 결과 */}
+                    <div className="p-5">
+                      <div className="mb-5">
+                        <h3 className="font-bold text-base">
+                          Phase 분석 결과
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Phase별 면적 구성 비율
+                        </p>
+                      </div>
 
-                  {/* Phase 분석 결과 */}
-                  <div className="p-5 flex flex-col">
-                    <div>
-                      <h3 className="font-bold text-base">
-                        Phase 분석 결과
-                      </h3>
+                      {/* 주요 Phase 자동 요약 */}
+                      {phaseResult?.phase_distribution && (() => {
+                        const entries = Object.entries(
+                          phaseResult.phase_distribution
+                        ).filter(([, value]) => typeof value === "number");
 
-                      <p className="text-xs text-slate-400 mt-1">
-                        Phase별 면적 구성 비율
-                      </p>
-                    </div>
+                        if (entries.length === 0) return null;
 
-                    <div className="flex-1 flex items-center justify-center py-5">
-                      <div className="w-full">
-                        <div className="rounded-xl border border-slate-200 bg-slate-50 p-5">
-                          <p className="text-xs font-bold text-slate-600">
-                            Phase 구성 비율
-                          </p>
+                        const [name, percent] = entries.reduce(
+                          (max, current) =>
+                            current[1] > max[1] ? current : max
+                        );
 
-                          <div className="mt-5 space-y-5">
-                            {[
-                              {
-                                label: "Primary Si",
-                                key: "Primary Si",
-                              },
-                              {
-                                label: "Eutectic Si",
-                                key: "Eutectic Si",
-                              },
-                              {
-                                label: "Al₃Ni",
-                                key: "Al3Ni",
-                              },
-                              {
-                                label: "Al",
-                                key: "Al",
-                              },
-                            ].map((phase) => {
+                        return (
+                          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                            <p className="text-xs font-semibold text-emerald-700">
+                              가장 높은 면적 비율
+                            </p>
 
-                              const value =
-                                phaseResult?.phase_distribution?.[phase.key];
+                            <div className="flex items-center justify-between mt-2">
+                              <p className="text-lg font-bold text-slate-800">
+                                {name === "Al3Ni" ? "Al₃Ni" : name}
+                              </p>
 
-                              return (
+                              <p className="text-xl font-bold text-emerald-700">
+                                {percent.toFixed(1)}%
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
-                                <div key={phase.key}>
+                      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 mt-5">
+                        <h4 className="text-xs font-bold text-slate-600 mb-4">
+                          Phase 구성 비율
+                        </h4>
 
-                                  <div className="flex items-center justify-between mb-2">
+                        <div className="space-y-5">
+                          {[
+                            ["Primary Si", "Primary Si"],
+                            ["Eutectic Si", "Eutectic Si"],
+                            ["Al₃Ni", "Al3Ni"],
+                            ["Al", "Al"],
+                          ].map(([label, key]) => {
+                            const value =
+                              phaseResult?.phase_distribution?.[key];
 
-                                    <span className="text-xs font-medium text-slate-500">
-                                      {phase.label}
-                                    </span>
+                            const percent =
+                              typeof value === "number" ? value : 0;
 
-                                    <span className="text-xs font-semibold text-slate-700">
-                                      {typeof value === "number"
-                                        ? `${value.toFixed(1)}%`
-                                        : "-"}
-                                    </span>
-
-                                  </div>
-
-                                  <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
-
-                                    <div
-                                      className="h-full rounded-full bg-emerald-500 transition-all duration-500"
-                                      style={{
-                                        width: `${
-                                          typeof value === "number"
-                                            ? Math.min(100, Math.max(0, value))
-                                            : 0
-                                        }%`
-                                      }}
-                                    />
-
-                                  </div>
-
+                            return (
+                              <div key={key}>
+                                <div className="flex justify-between text-xs mb-2">
+                                  <span className="text-slate-500">{label}</span>
+                                  <span className="font-semibold text-slate-700">
+                                    {typeof value === "number"
+                                      ? `${value.toFixed(1)}%`
+                                      : "-"}
+                                  </span>
                                 </div>
 
-                              );
-
-                            })}
-
-                          </div>
-                        </div>
-
-                        <div className="mt-4 rounded-xl border border-emerald-100 bg-emerald-50 p-4">
-                          <div className="flex gap-3">
-                            <div className="w-5 h-5 rounded-full bg-emerald-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0">
-                              i
-                            </div>
-
-                            <p className="text-xs text-emerald-700 leading-5">
-                              모델 연결 후 segmentation 결과를 기준으로 각 Phase의 면적 비율이 표시됩니다.
-                            </p>
-                          </div>
+                                <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+                                  <div
+                                    className="h-full rounded-full"
+                                    style={{
+                                      width: `${percent}%`,
+                                      backgroundColor: PHASE_COLORS[key],
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
+
                   </div>
+                </section>
+
+                {/* Phase 분석 하단 안내 */}
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+                  <p className="text-xs text-slate-500 leading-6">
+                    <span className="text-emerald-600 mr-2">●</span>
+                    Phase 분석은 파단면 분석과 별도의 입력 이미지와 모델을 사용합니다.
+                    분석 결과에는 영역별 Phase 분류 이미지와 각 Phase의 면적 비율이
+                    표시됩니다. 면적 비율은 이미지에서 각 Phase가 차지하는 픽셀
+                    비율이며, 모델의 예측 신뢰도와는 다른 값입니다.
+                  </p>
                 </div>
-              </section>
-
-              <div className="mt-5 flex items-start gap-3 rounded-xl border border-slate-200 bg-white px-5 py-4">
-                <div className="w-2 h-2 rounded-full bg-emerald-600 mt-2 shrink-0" />
-
-                <p className="text-sm text-slate-500 leading-6">
-                  Phase 분석은 파단면 분석과 별도의 입력 이미지와 모델을 사용합니다.
-                  분석 결과에는 영역별 Phase 분류 이미지와 각 Phase의 면적 비율이 표시됩니다.
-                  면적 비율은 이미지에서 각 Phase가 차지하는 픽셀 비율이며,
-                  모델의 예측 신뢰도와는 다른 값입니다.
-                </p>
-              </div>
-
               </>
             )}
           </div>
         </main>
       </div>
 
-      {/* AI 상세 분석 */}
-      {showAIModal &&
-        result && (
-          <ModalShell
-            title="AI 상세 분석"
-            subtitle="Gemma 기반 파손단면 분석 설명"
-            onClose={() =>
-              setShowAIModal(
-                false
-              )
-            }
-            maxWidth="max-w-4xl"
-          >
-            <div className="space-y-4">
+      {showReport && result && (
+        <ReportModal
+          result={result}
+          previewUrl={previewUrl}
+          report={report}
+          loading={reportLoading}
+          error={reportError}
+          onClose={() => setShowReport(false)}
+        />
+      )}
 
-              <div className="rounded-xl border border-slate-200 p-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center text-xs font-bold">
-                    1
-                  </span>
-
-                  <h4 className="font-bold">
-                    주요 특징
-                  </h4>
+      {showSimilarModal && result && (
+        <ModalShell
+          title="유사 이미지"
+          subtitle="입력 이미지와 특징이 유사한 사례 Top-3"
+          onClose={() => setShowSimilarModal(false)}
+        >
+          {result.similar_images?.length > 0 ? (
+            <div className="grid md:grid-cols-3 gap-5">
+              {result.similar_images.slice(0, 3).map((item, index) => (
+                <div key={index} className="rounded-xl border overflow-hidden">
+                  <img
+                    src={`http://localhost:8000${item.image_url}`}
+                    alt={`유사 사례 ${index + 1}`}
+                    className="w-full h-52 object-cover"
+                  />
+                  <div className="p-4">
+                    <p className="font-bold">
+                      TOP {index + 1} · {item.class_name || item.label}
+                    </p>
+                    <p className="text-sm text-slate-500 mt-2">
+                      {typeof item.similarity === "number"
+                        ? `${(item.similarity * 100).toFixed(1)}%`
+                        : item.similarity}
+                    </p>
+                  </div>
                 </div>
-
-                <p className="text-sm text-slate-700 leading-7">
-                  {result.feature ||
-                    "주요 특징 정보가 없습니다."}
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 p-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="w-7 h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold">
-                    2
-                  </span>
-
-                  <h4 className="font-bold">
-                    판단 근거 설명
-                  </h4>
-                </div>
-
-                <p className="text-sm text-slate-700 leading-7 whitespace-pre-line">
-                  {result.explanation ||
-                    "설명 정보가 없습니다."}
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 p-5">
-                <div className="flex items-center gap-3 mb-3">
-                  <span className="w-7 h-7 rounded-full bg-amber-500 text-white flex items-center justify-center text-xs font-bold">
-                    3
-                  </span>
-
-                  <h4 className="font-bold">
-                    예상 원인
-                  </h4>
-                </div>
-
-                <p className="text-sm text-slate-700 leading-7">
-                  {result.expected_cause ||
-                    "예상 원인 정보가 없습니다."}
-                </p>
-              </div>
-
-              <div
-                className={`rounded-xl border p-5 ${confidenceStyle}`}
-              >
-                <p className="font-bold text-sm">
-                  분석 신뢰도 안내
-                </p>
-
-                <p className="text-sm leading-6 mt-2">
-                  {
-                    result.confidence_message
-                  }
-                </p>
-              </div>
-
-              <p className="text-xs text-slate-400 leading-5">
-                본 설명은 이미지 및 입력
-                정보를 기반으로 생성된 AI
-                분석 결과이며 실제 사고
-                원인을 확정하는 정보가
-                아닙니다.
-              </p>
+              ))}
             </div>
-          </ModalShell>
-        )}
+          ) : (
+            <p className="text-sm text-slate-400">
+              유사 이미지 결과가 없습니다.
+            </p>
+          )}
+        </ModalShell>
+      )}
 
-      {/* 유사 이미지 */}
-      {showSimilarModal &&
-        result && (
-          <ModalShell
-            title="유사 이미지"
-            subtitle="입력 이미지와 특징이 유사한 사례 Top-3"
-            onClose={() =>
-              setShowSimilarModal(
-                false
-              )
-            }
-            maxWidth="max-w-5xl"
-          >
-            {result
-              ?.similar_images
-              ?.length >
-            0 ? (
-              <div className="grid md:grid-cols-3 gap-5">
-                {result.similar_images
-                  .slice(
-                    0,
-                    3
-                  )
-                  .map(
-                    (
-                      item,
-                      index
-                    ) => (
-                      <div
-                        key={
-                          index
-                        }
-                        className="rounded-xl border border-slate-200 overflow-hidden bg-white"
-                      >
-                        <div className="h-52 bg-slate-100">
-                          <img
-                            src={`http://localhost:8000${item.image_url}`}
-                            alt={`유사 사례 ${
-                              index +
-                              1
-                            }`}
-                            className="w-full h-full object-cover"
-                          />
-                        </div>
+      {showGradcamModal && result && (
+        <ModalShell
+          title="Grad-CAM++ 확대 보기"
+          onClose={() => setShowGradcamModal(false)}
+        >
+          <GradcamView
+            result={result}
+            chipSize="text-sm"
+            canvasClass="max-h-[70vh] min-h-[500px]"
+          />
+        </ModalShell>
+      )}
 
-                        <div className="p-4">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-violet-600">
-                              TOP{" "}
-                              {index +
-                                1}
-                            </span>
-
-                            {item.similarity !==
-                              undefined && (
-                              <span className="text-sm font-bold">
-                                {typeof item.similarity ===
-                                "number"
-                                  ? `${(
-                                      item.similarity *
-                                      100
-                                    ).toFixed(
-                                      1
-                                    )}%`
-                                  : item.similarity}
-                              </span>
-                            )}
-                          </div>
-
-                          <p className="font-bold mt-2">
-                            {item.class_name ||
-                              item.label ||
-                              result.display_prediction ||
-                              result.prediction}
-                          </p>
-
-                          {item.filename && (
-                            <p className="text-xs text-slate-400 mt-1">
-                              {
-                                item.filename
-                              }
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  )}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 py-20 text-center">
-                <p className="font-semibold text-slate-600">
-                  유사 이미지 결과가
-                  없습니다.
-                </p>
-
-                <p className="text-sm text-slate-400 mt-2">
-                  백엔드 응답의
-                  similar_images 결과를
-                  확인해주세요.
-                </p>
-              </div>
-            )}
-          </ModalShell>
-        )}
-
-      {/* GradCAM 확대 */}
-      {showGradcamModal &&
-        result && (
-          <ModalShell
-            title="Grad-CAM++ 확대 보기"
-            subtitle="모델 활성화 영역을 확대하여 확인합니다."
-            onClose={() =>
-              setShowGradcamModal(
-                false
-              )
-            }
-            maxWidth="max-w-5xl"
-          >
-            <GradcamView
-              result={
-                result
-              }
-              chipSize="text-sm"
-              canvasClass="max-h-[70vh] min-h-[500px]"
-            />
-          </ModalShell>
-        )}
-
-      {/* 비교 모달 */}
       {showCompareModal && (
         <ModalShell
           title="분석 결과 비교"
           subtitle="선택한 두 분석 결과의 특징과 차이를 비교합니다."
-          onClose={() =>
-            setShowCompareModal(
-              false
-            )
-          }
+          onClose={() => setShowCompareModal(false)}
           maxWidth="max-w-6xl"
         >
-          {compareItems.length <
-          2 ? (
-            <div className="rounded-xl bg-slate-50 border p-10 text-center text-slate-500">
-              비교할 기록 2개를
-              선택해주세요.
-            </div>
+          {compareItems.length < 2 ? (
+            <p className="text-center text-slate-500 p-10">
+              비교할 기록 2개를 선택해주세요.
+            </p>
           ) : (
             <>
               <div className="grid md:grid-cols-2 gap-5">
-                {compareItems.map(
-                  (
-                    item,
-                    index
-                  ) => {
-                    const itemResult =
-                      item.result;
-
-                    const itemMaterial =
-                      MATERIAL_LABELS[
-                        itemResult
-                          .material
-                      ] ||
-                      itemResult
-                        .material ||
-                      "-";
-
-                    return (
-                      <div
-                        key={
-                          item.id
-                        }
-                        className="rounded-xl border border-slate-200 overflow-hidden"
-                      >
-                        <div className="bg-slate-50 px-5 py-3 border-b flex items-center justify-between">
-                          <p className="font-bold">
-                            이미지{" "}
-                            {index +
-                              1}
-                          </p>
-
-                          <p className="text-xs text-slate-400">
-                            {
-                              item.time
-                            }
-                          </p>
-                        </div>
-
-                        <div className="p-5">
-                          <div className="h-56 rounded-xl border bg-white overflow-hidden flex items-center justify-center">
-                            {item.image ? (
-                              <img
-                                src={
-                                  item.image
-                                }
-                                alt="비교 이미지"
-                                className="w-full h-full object-contain"
-                              />
-                            ) : (
-                              <p className="text-slate-400">
-                                No Image
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="mt-4 flex items-end justify-between">
-                            <div>
-                              <p className="text-xs text-slate-400">
-                                파손 유형
-                              </p>
-
-                              <p className="text-xl font-bold mt-1">
-                                {itemResult
-                                  .display_prediction ||
-                                  itemResult
-                                    .prediction}
-                              </p>
-                            </div>
-
-                            <p className="text-2xl font-black text-blue-600">
-                              {
-                                itemResult
-                                  .confidence
-                              }
-                            </p>
-                          </div>
-
-                          <div className="mt-4 rounded-lg bg-slate-50 p-4">
-                            <p className="text-xs text-slate-400">
-                              재질
-                            </p>
-
-                            <p className="text-sm font-semibold mt-1">
-                              {
-                                itemMaterial
-                              }
-                            </p>
-                          </div>
-
-                          <div className="mt-3 rounded-lg border p-4">
-                            <p className="text-xs font-bold text-slate-500">
-                              주요 특징
-                            </p>
-
-                            <p className="text-sm leading-6 mt-2">
-                              {itemResult.feature ||
-                                "-"}
-                            </p>
-                          </div>
-
-                          <div className="mt-3 rounded-lg border p-4">
-                            <p className="text-xs font-bold text-slate-500">
-                              예상 원인
-                            </p>
-
-                            <p className="text-sm leading-6 mt-2">
-                              {itemResult.expected_cause ||
-                                "-"}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  }
-                )}
+                {compareItems.map((item, index) => (
+                  <div key={item.id} className="rounded-xl border p-5">
+                    <h3 className="font-bold mb-3">이미지 {index + 1}</h3>
+                    {item.image && (
+                      <img
+                        src={item.image}
+                        alt={`비교 이미지 ${index + 1}`}
+                        className="w-full h-56 object-contain bg-slate-50 rounded-lg"
+                      />
+                    )}
+                    <p className="font-bold mt-4">
+                      {item.result.display_prediction || item.result.prediction}
+                    </p>
+                    <p className="text-blue-600 font-bold">
+                      {item.result.confidence}
+                    </p>
+                    <p className="text-sm mt-3">{item.result.feature}</p>
+                    <p className="text-sm mt-3">{item.result.expected_cause}</p>
+                  </div>
+                ))}
               </div>
 
-              <div className="mt-6 flex justify-center">
+              <div className="text-center mt-6">
                 <button
-                  onClick={
-                    handleCompareWithLLM
-                  }
-                  disabled={
-                    compareLoading
-                  }
-                  className="rounded-xl bg-[#172536] text-white px-7 py-3 text-sm font-bold hover:bg-slate-700 disabled:opacity-50 transition"
+                  onClick={handleCompareWithLLM}
+                  disabled={compareLoading}
+                  className="bg-[#172536] text-white px-7 py-3 rounded-xl font-bold disabled:opacity-50"
                 >
-                  {compareLoading
-                    ? "비교 설명 생성 중..."
-                    : "AI 비교 설명 생성"}
+                  {compareLoading ? "비교 설명 생성 중..." : "AI 비교 설명 생성"}
                 </button>
               </div>
 
               {compareSummary && (
                 <div className="mt-7 space-y-4">
-
-                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-5">
-                    <p className="text-xs font-bold text-blue-600">
-                      핵심 요약
-                    </p>
-
-                    <p className="text-lg font-bold text-blue-950 leading-8 mt-2">
-                      {compareSummary.summary ||
-                        compareSummary.compare_summary ||
-                        "비교 요약이 없습니다."}
-                    </p>
-                  </div>
-
-                  <div className="grid md:grid-cols-2 gap-4">
-
-                    <div className="rounded-xl border p-5">
-                      <p className="font-bold">
-                        공통점
-                      </p>
-
-                      <p className="text-sm text-slate-600 leading-7 mt-2">
-                        {compareSummary.common_point ||
-                          "공통점 정보가 없습니다."}
+                  {[
+                    ["핵심 요약", compareSummary.summary || compareSummary.compare_summary],
+                    ["공통점", compareSummary.common_point],
+                    ["시각적 특징 차이", compareSummary.visual_difference],
+                    ["파손 메커니즘 차이", compareSummary.mechanism_difference],
+                    ["예상 원인 차이", compareSummary.cause_difference],
+                    ["예측 확률 비교", compareSummary.confidence_difference],
+                  ].map(([title, value]) => (
+                    <div key={title} className="rounded-xl border p-5">
+                      <h3 className="font-bold">{title}</h3>
+                      <p className="text-sm leading-7 mt-2 text-slate-600">
+                        {value || "정보가 없습니다."}
                       </p>
                     </div>
-
-                    <div className="rounded-xl border p-5">
-                      <p className="font-bold">
-                        시각적 특징 차이
-                      </p>
-
-                      <p className="text-sm text-slate-600 leading-7 mt-2">
-                        {compareSummary.visual_difference ||
-                          "시각적 차이 정보가 없습니다."}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border p-5">
-                    <p className="font-bold">
-                      파손 메커니즘 차이
-                    </p>
-
-                    <p className="text-sm text-slate-600 leading-7 mt-2">
-                      {compareSummary.mechanism_difference ||
-                        "메커니즘 차이 정보가 없습니다."}
-                    </p>
-                  </div>
-
-                  {sameCompareCause ? (
-                    <div className="rounded-xl border border-rose-200 bg-rose-50 p-5">
-                      <p className="font-bold text-rose-800">
-                        공통 예상 원인
-                      </p>
-
-                      <p className="text-sm text-rose-700 leading-7 mt-2">
-                        {compareItems[0]
-                          ?.result
-                          ?.expected_cause ||
-                          "-"}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="rounded-xl border p-5">
-                      <p className="font-bold">
-                        예상 원인 차이
-                      </p>
-
-                      <p className="text-sm text-slate-600 leading-7 mt-2">
-                        {compareSummary.cause_difference ||
-                          "예상 원인 차이 정보가 없습니다."}
-                      </p>
-                    </div>
-                  )}
-
-                  <div className="rounded-xl border p-5">
-                    <p className="font-bold">
-                      예측 확률 비교
-                    </p>
-
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-5 mt-4">
-
-                      <div>
-                        <p className="text-xs text-slate-400">
-                          이미지 1
-                        </p>
-
-                        <p className="text-2xl font-black mt-1">
-                          {compareItems[
-                            0
-                          ]?.result
-                            ?.confidence ||
-                            "-"}
-                        </p>
-                      </div>
-
-                      <div className="text-slate-300 font-black">
-                        VS
-                      </div>
-
-                      <div className="text-right">
-                        <p className="text-xs text-slate-400">
-                          이미지 2
-                        </p>
-
-                        <p className="text-2xl font-black mt-1">
-                          {compareItems[
-                            1
-                          ]?.result
-                            ?.confidence ||
-                            "-"}
-                        </p>
-                      </div>
-                    </div>
-
-                    <p className="text-sm text-slate-600 leading-7 mt-4">
-                      {compareSummary.confidence_difference ||
-                        "예측 확률 비교 정보가 없습니다."}
-                    </p>
-                  </div>
-
-                  <p className="text-xs text-slate-400 leading-5">
-                    본 비교 분석은 이미지와
-                    입력 정보를 기반으로 한
-                    AI 추정 결과입니다.
-                  </p>
+                  ))}
                 </div>
               )}
             </>

@@ -21,7 +21,7 @@ import {
 // true  → Firestore 실제로 읽기/쓰기 수행
 // false → 네트워크 호출 없이 즉시 반환 (로컬 개발용, 빠름)
 
-const DB_STORE = false;
+const DB_STORE = true;
 
 
 // ==========================================
