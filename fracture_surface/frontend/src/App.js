@@ -2788,9 +2788,8 @@ const clearHistory = async () => {
 
               {/* 하단 기능 탭 */}
               <div className="border-t border-slate-200 p-5">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   {[
-                    { key: "llm", label: "LLM 설명" },
                     { key: "rag", label: "관련 문헌 검색 결과" },
                     { key: "similar", label: "유사 이미지" },
                   ].map((tab) => (
